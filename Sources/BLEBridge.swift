@@ -35,6 +35,7 @@ final class BLEBridge: NSObject, ObservableObject {
     private var pendingConnect: String?
     private var scanDeadline: Date?
     private var notifyChars: Set<String> = []
+    private var scanWatchdog: DispatchWorkItem?
 
     // MARK: Buffers
 
@@ -222,7 +223,9 @@ extension BLEBridge {
                 "bluetooth": bluetoothStateText,
                 "endpoints": [
                     "GET  /status",
-                    "GET  /scan",
+                    "GET  /scan            (starts, returns at once)",
+                    "GET  /devices",
+                    "GET  /stopscan",
                     "POST /connect?uuid=UUID",
                     "POST /disconnect",
                     "GET  /services",
@@ -244,18 +247,32 @@ extension BLEBridge {
             ]
 
         case "/scan":
+            // Non-blocking: start the scan and return immediately. Holding the
+            // HTTP connection open for the duration caused the phone to reset
+            // the socket. Poll /devices instead.
             guard central.state == .poweredOn else {
                 return ["ok": false, "error": "bluetooth \(bluetoothStateText)"]
             }
             discovered.removeAll()
             central.scanForPeripherals(withServices: nil,
                                        options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
-            try? await Task.sleep(nanoseconds: 6_000_000_000)
-            central.stopScan()
+            startScanWatchdog()
+            return ["ok": true, "scanning": true,
+                    "message": "poll /devices, scan stops by itself"]
+
+        case "/devices":
             var list: [[String: Any]] = []
-            for (_, info) in discovered { list.append(info) }
+            for (_, info) in discovered {
+                var copy = info
+                copy.removeValue(forKey: "peripheral")
+                list.append(copy)
+            }
             list.sort { ($0["rssi"] as? Int ?? -999) > ($1["rssi"] as? Int ?? -999) }
             return ["ok": true, "count": list.count, "devices": list]
+
+        case "/stopscan":
+            central.stopScan()
+            return ["ok": true]
 
         case "/connect":
             guard let uuidStr = query["uuid"], !uuidStr.isEmpty else {
@@ -336,6 +353,17 @@ extension BLEBridge {
         default:
             return ["ok": false, "error": "unknown path \(path)"]
         }
+    }
+
+    /// Stop the scan automatically after a few seconds so the radio does not
+    /// stay busy (and the battery does not drain) if nobody stops it.
+    fileprivate func startScanWatchdog() {
+        scanWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in self?.central.stopScan() }
+        }
+        scanWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: work)
     }
 
     fileprivate func propsText(_ p: CBCharacteristicProperties) -> String {
