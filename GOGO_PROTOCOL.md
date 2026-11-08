@@ -345,6 +345,39 @@ here, because the write succeeds and the motor ignores it.
 
 Downward adjustment (slowing the scooter) does work and is enforced.
 
+
+## No telemetry - confirmed experimentally
+
+The scooter is **write-only** from the host's point of view.
+
+Measured with a live read channel, subscribed to both FFF1 and FFF3:
+
+| Situation | Frames received |
+|---|---|
+| Send a command | 1 echo, immediately |
+| Ride it (coast / throttle / hard throttle) | **0** |
+| Press power / light / mode buttons | **0** |
+| Idle, listening 55 s | **0** |
+
+Earlier one-off frames (cmd 0x38) were replies to something, not a periodic
+broadcast - a 55 second silent listen produced nothing.
+
+### Consequence
+
+Remote throttling is **impossible** on this hardware, for two independent
+reasons:
+
+1. There is no motor / throttle command in the protocol. Control ids are
+   limits and gates only (gear, lock, limits, lights, zero-start).
+2. There is no throttle or speed telemetry to react to. The command `0x38`
+   frames seen once carried `02 01 05 01 03 00 64 01 01 02 00 00` - a
+   snapshot with gear (0x03) and what looks like battery (0x64 = 100) - but
+   it does not stream, and no byte was observed tracking throttle.
+
+The closest achievable thing is a **remote speed cap**: set all three gear
+limits to the floor (10 mph) and the scooter cannot exceed it. That is a step
+change with ~1-2 s latency, not a throttle.
+
 ## Safety note
 
 `limit_speed_1/2/3` are the speed limiters. Raising them is the one change here
