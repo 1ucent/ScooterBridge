@@ -232,6 +232,7 @@ extension BLEBridge {
                     "POST /connect?uuid=UUID",
                     "POST /disconnect",
                     "GET  /services",
+                    "POST /read?char=FFF4",
                     "POST /subscribe?char=FFF1",
                     "POST /write?char=FFF2&data=55AABB&type=cmd|req",
                     "GET  /rx?clear=1"
@@ -344,6 +345,20 @@ extension BLEBridge {
             p.writeValue(Data(bytes), for: c, type: type)
             return ["ok": true, "char": key, "bytes": bytes.count,
                     "type": type == .withResponse ? "withResponse" : "withoutResponse"]
+
+        case "/read":
+            guard let p = peripheral,
+                  let key = query["char"]?.uppercased(),
+                  let c = characteristics[key] else {
+                return ["ok": false, "error": "need char, and a connection"]
+            }
+            if !c.properties.contains(.read) {
+                return ["ok": false, "error": "characteristic is not readable"]
+            }
+            // Non-blocking: iOS delivers the value to didUpdateValueFor, which
+            // appends to the rx buffer. Poll /rx for the result.
+            p.readValue(for: c)
+            return ["ok": true, "char": key, "message": "poll /rx for the value"]
 
         case "/rx":
             let frames = rxBuffer.map { ["t": $0.t, "char": $0.char, "hex": $0.hex] }
